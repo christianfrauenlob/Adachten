@@ -77,6 +77,12 @@ sup{font-size:.65em;line-height:0;color:var(--lamp)}
 .notes li{margin-top:4px}
 .reg ol{margin:0;padding-left:1.6rem}
 .reg h3{font-family:var(--f-label);font-weight:500;font-size:.9rem;letter-spacing:.05em;margin:8px 0 2px;color:var(--ink)}
+.bibeltext{margin:4px 0 18px;border-left:3px solid var(--rule);padding-left:12px}
+.bibeltext summary{cursor:pointer;font-family:var(--f-label);letter-spacing:.05em;font-size:.88rem;color:var(--muted)}
+.bibeltext .bt{font-size:.97rem;line-height:1.55;margin-top:6px}
+.bibeltext .bt p{margin:0 0 .5em}
+.bibeltext sup{color:var(--muted);margin-right:2px}
+.bibeltext .kap{font-family:var(--f-label);font-size:.8rem;color:var(--muted);display:block;margin-top:4px}
 </style>
 
 </head><body><header class="bar"><div class="row">
@@ -154,6 +160,7 @@ const BOOKS={
    <div class="nr" style="margin-top:14px">${e.chap}</div>
    <h2 class="titel" style="margin-top:4px">${e.title}</h2>
    <div class="ref" style="margin-top:4px">Bibellese: ${e.ref}</div>
+   <details class="bibeltext" ${bibelOffen()?"open":""}><summary>Bibeltext</summary><div class="bt" data-ref="${e.ref}">…</div></details>
    <div class="text">${e.paras.map(p=>`<p${/^<b>/.test(p)?' class="vers"':''}>${p}</p>`).join("")}</div>`},
   hay:e=>strip([e.chap,e.title,e.ref,e.paras.join(" ")].join(" ")),
   sub:e=>e.title+" · "+e.ref,
@@ -163,12 +170,71 @@ const BOOKS={
 };
 for(const b of Object.values(BOOKS)) b.byDate=Object.fromEntries(b.entries.filter(e=>e.date).map(e=>[e.date,e]));
 
+
+// ── BIBELTEXT (wie im Brevier: data/bibel/<buch>.json, Felder chapter/verse/text) ──
+const BASE=(()=>{let p=location.pathname.replace(/[^\/]*\.html?$/i,'');if(!p.endsWith('/'))p+='/';return location.origin+p})();
+const _bibel={};
+function dateiKandidaten(buch){
+  const n=buch.replace(/^(\d)\.\s*/,'$1 ').trim();
+  const ae=n.replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/Ä/g,'Ae').replace(/Ö/g,'Oe').replace(/Ü/g,'Ue').replace(/ß/g,'ss');
+  // Dateinamen wie im Brevier-Repo (data/bibel/), Abweichungen vom Buchnamen:
+  const DATEI={"Römer":"roemers","Hiob":"job","Esther":"ester","Ruth":"rut","Micha":"mica","Psalm":"psalm","Psalmen":"psalm","Hoheslied":"hohelied"};
+  return [...new Set([DATEI[n]||ae,ae,n].map(x=>x.replace(/ /g,'_').toLowerCase()))];
+}
+async function ladeBuch(buch){
+  if(buch in _bibel) return _bibel[buch];
+  for(const k of dateiKandidaten(buch)){
+    try{const r=await fetch(BASE+'data/bibel/'+encodeURIComponent(k)+'.json'); if(r.ok){return _bibel[buch]=await r.json();}}catch(_){}
+  }
+  return _bibel[buch]=null;
+}
+// "Lukas 11, 5-13" · "1. Johannes 1, 5-2, 2" · "Psalm 119, 97-105+162"
+function parseRef(ref){
+  const m=ref.trim().match(/^((?:\d\.\s*)?[A-ZÄÖÜ][a-zäöüß]+)\s+(.*)$/); if(!m) return null;
+  const buch=m[1].replace(/^(\d)\.\s*/,'$1. '); const teile=[]; let kap=null;
+  for(let s of m[2].split('+')){
+    s=s.replace(/\s/g,'');
+    let x;
+    if((x=s.match(/^(\d+),(\d+)-(\d+),(\d+)$/))){kap=+x[3];teile.push({von:[+x[1],+x[2]],bis:[+x[3],+x[4]]});}
+    else if((x=s.match(/^(\d+),(\d+)(?:-(\d+))?$/))){kap=+x[1];teile.push({von:[kap,+x[2]],bis:[kap,+(x[3]||x[2])]});}
+    else if((x=s.match(/^(\d+)(?:-(\d+))?$/))&&kap){teile.push({von:[kap,+x[1]],bis:[kap,+(x[2]||x[1])]});}
+    else return null;
+  }
+  return {buch,teile};
+}
+const cmp=(a,b)=>a[0]-b[0]||a[1]-b[1];
+async function bibeltext(ref){
+  const p=parseRef(ref); if(!p) return null;
+  const buch=await ladeBuch(p.buch); if(!buch) return null;
+  const html=[];
+  for(const t of p.teile){
+    let lastK=null, out=[];
+    for(const v of buch){const cv=[+v.chapter,+v.verse];
+      if(cmp(cv,t.von)>=0&&cmp(cv,t.bis)<=0){
+        if(lastK!==null&&cv[0]!==lastK) out.push(`<span class="kap">Kapitel ${cv[0]}</span>`);
+        lastK=cv[0]; out.push(`<sup>${cv[1]}</sup>${esc(v.text)} `);}}
+    if(out.length) html.push(`<p>${out.join('')}</p>`);
+  }
+  return html.length?html.join(''):null;
+}
+function bibelOffen(){try{return localStorage.getItem('andacht-bibel')!=='zu'}catch(_){return true}}
+async function fuelleBibel(){
+  const el=document.querySelector('#art .bt[data-ref]'); if(!el) return;
+  const ref=el.dataset.ref; const h=await bibeltext(ref);
+  if(el.dataset.ref!==ref||!el.isConnected) return;
+  el.innerHTML=h||(location.protocol==='file:'
+    ?'<em>Der Bibeltext wird nur geladen, wenn die App über GitHub Pages (oder einen lokalen Server) läuft.</em>'
+    :'<em>Bibeltext nicht gefunden (Ordner data/bibel/ prüfen).</em>');
+  const d=el.closest('details'); if(d) d.ontoggle=()=>{try{localStorage.setItem('andacht-bibel',d.open?'auf':'zu')}catch(_){}};
+}
+
 let book="sk", curKey=todayKey(), cur=null;
 try{const s=localStorage.getItem("andacht-buch"); if(BOOKS[s]) book=s;}catch(_){}
 
 function show(e,scroll=true){
   const B=BOOKS[book]; cur=e; if(e.date) curKey=e.date;
   $("art").innerHTML=B.render(e);
+  fuelleBibel();
   if(e.date){const y=new Date().getFullYear(); $("pick").value=(e.date==="02-29"&&!isLeap(y)?2028:y)+"-"+e.date;}
   if(scroll) window.scrollTo({top:0});
 }
