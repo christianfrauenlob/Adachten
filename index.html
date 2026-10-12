@@ -93,6 +93,10 @@ sup{font-size:.65em;line-height:0;color:var(--lamp)}
 .vtext sup{color:var(--muted);margin-right:2px}
 .vtext .kap{font-family:var(--f-label);font-size:.8rem;color:var(--muted);display:block;margin-top:4px}
 .text .lied{display:block;font-style:italic;padding-left:1.2rem;line-height:1.5}
+.vlbar{max-width:42rem;margin:8px auto 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-family:var(--f-label);font-size:.85rem;color:var(--muted)}
+.vlbar select{background:var(--sheet);border:1px solid var(--rule);border-radius:6px;padding:2px 4px;max-width:11rem}
+#vlBtn[aria-pressed="true"]{background:var(--dusk);color:var(--sheet);border-color:var(--dusk)}
+.liest{background:color-mix(in srgb,var(--lamp) 18%,transparent);border-radius:4px;box-shadow:0 0 0 4px color-mix(in srgb,var(--lamp) 18%,transparent)}
 </style>
 
 </head><body><header class="bar"><div class="row">
@@ -102,6 +106,13 @@ sup{font-size:.65em;line-height:0;color:var(--lamp)}
   <button class="btn" id="next" aria-label="Nächster Tag">›</button>
   <button class="btn" id="heute">Heute</button>
   <button class="btn" id="regBtn" aria-expanded="false">Register</button>
+  <button class="btn" id="vlBtn" aria-pressed="false" title="Andacht vorlesen">▶ Vorlesen</button>
+</div>
+<div class="vlbar" id="vlbar" hidden>
+  <button class="btn" id="vlPause">❚❚ Pause</button>
+  <button class="btn" id="vlStop">■ Stopp</button>
+  <label>Tempo <select id="vlRate"><option value="0.8">langsam</option><option value="0.9">ruhig</option><option value="1" selected>normal</option><option value="1.15">zügig</option></select></label>
+  <label>Stimme <select id="vlVoice"></select></label>
 </div>
 <div class="books" role="group" aria-label="Andachtsbuch wählen">
   <button data-b="sk">Bogatzky<small>Schatzkästlein</small></button>
@@ -284,10 +295,93 @@ async function fuelleBibel(){
   const d=el.closest('details'); if(d) d.ontoggle=()=>{try{localStorage.setItem('andacht-bibel',d.open?'auf':'zu')}catch(_){}};
 }
 
+// ── VORLESEN (Web Speech API, im Browser eingebaut) ──
+const ABK={"1. Thess.": "1. Thessalonicher", "2. Thess.": "2. Thessalonicher", "1. Petr.": "1. Petrus", "2. Petr.": "2. Petrus", "1. Makk.": "1. Makkabäer", "2. Makk.": "2. Makkabäer", "A. d. V.": "Anmerkung des Verlags", "A. d. Ü.": "Anmerkung des Überarbeiters", "1. Sam.": "1. Samuel", "2. Sam.": "2. Samuel", "1. Kön.": "1. Könige", "2. Kön.": "2. Könige", "1. Chr.": "1. Chronik", "2. Chr.": "2. Chronik", "1. Kor.": "1. Korinther", "2. Kor.": "2. Korinther", "1. Tim.": "1. Timotheus", "2. Tim.": "2. Timotheus", "Philem.": "Philemon", "1. Joh.": "1. Johannes", "2. Joh.": "2. Johannes", "3. Joh.": "3. Johannes", "Offenb.": "Offenbarung", "Richt.": "Richter", "Matth.": "Matthäus", "Weish.": "Weisheit", "Esth.": "Esther", "Pred.": "Prediger", "Klgl.": "Klagelieder", "Zeph.": "Zephanja", "Sach.": "Sacharja", "Mark.": "Markus", "Phil.": "Philipper", "Hebr.": "Hebräer", "Offb.": "Offenbarung", "d. h.": "das heißt", "z. B.": "zum Beispiel", "Jos.": "Josua", "Neh.": "Nehemia", "Spr.": "Sprüche", "Hld.": "Hoheslied", "Jes.": "Jesaja", "Jer.": "Jeremia", "Hes.": "Hesekiel", "Dan.": "Daniel", "Hos.": "Hosea", "Obd.": "Obadja", "Nah.": "Nahum", "Hab.": "Habakuk", "Hag.": "Haggai", "Mal.": "Maleachi", "Luk.": "Lukas", "Joh.": "Johannes", "Apg.": "Apostelgeschichte", "Röm.": "Römer", "Gal.": "Galater", "Eph.": "Epheser", "Kol.": "Kolosser", "Tit.": "Titus", "Jak.": "Jakobus", "Jud.": "Judas", "Sir.": "Sirach", "Tob.": "Tobias", "Bar.": "Baruch", "Kap.": "Kapitel", "vgl.": "vergleiche", "usw.": "und so weiter", "Ebr.": "Hebräer", "Ps.": "Psalm", "Mi.": "Micha", "NB.": "Notabene", "V.": "Vers", "WA": "Weimarer Ausgabe"};
+const VL={an:false,pause:false,segs:[],i:0,timer:null};
+const synth=window.speechSynthesis;
+function sprechText(s){
+  s=s.replace(/[⟨⟩❧▸▾]/g,'').replace(/\s+/g,' ').trim();
+  for(const [k,v] of Object.entries(ABK)){
+    const re=new RegExp('(^|[\\s(;])'+k.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?=\\s|\\d|$)','g');
+    s=s.replace(re,(m,a)=>a+v+' ');
+  }
+  // Stellenangaben: "3, 7-8" / "3,7–8" -> "3, Vers 7 bis 8"
+  s=s.replace(/(\d+)\s*,\s*(\d+)\s*[-–]\s*(\d+)\s*,\s*(\d+)/g,'$1, Vers $2 bis Kapitel $3, Vers $4')
+     .replace(/(\d+)\s*,\s*(\d+)\s*[-–]\s*(\d+)/g,'$1, Vers $2 bis $3')
+     .replace(/(\d+)\s*,\s*(\d+)/g,'$1, Vers $2')
+     .replace(/(\d+)((?:\.\d+)+)(?![\d.]*\s*[A-ZÄÖÜa-zäöü]*\s*\d{4})/g,(m,a,r)=>{const n=[a,...r.slice(1).split('.')];return n.slice(0,-1).join(', ')+' und '+n[n.length-1];}).replace(/(\d)\s*[-–]\s*(\d)/g,'$1 bis $2').replace(/(\d)\+(\d)/g,'$1 und $2')
+     .replace(/(^|\s)(\d)\.\s+(?=[A-ZÄÖÜ])/g,(m,a,n)=>a+['','Erstes','Zweites','Drittes','Viertes','Fünftes'][+n]+' ');
+  return s.replace(/\s+/g,' ').trim();
+}
+function stimmen(){return synth?synth.getVoices().filter(v=>/^de(-|_|$)/i.test(v.lang)):[]}
+function fuelleStimmen(){
+  const sel=$("vlVoice"), vs=stimmen(); let gew=null; try{gew=localStorage.getItem('vl-stimme')}catch(_){}
+  sel.innerHTML=vs.map(v=>`<option value="${esc(v.name)}">${esc(v.name.replace(/Microsoft |Google |\(.*?\)/g,'').trim()||v.name)}</option>`).join('')||'<option value="">Standard</option>';
+  if(gew&&vs.some(v=>v.name===gew)) sel.value=gew;
+}
+if(synth){fuelleStimmen(); synth.onvoiceschanged=fuelleStimmen;}
+try{const r=localStorage.getItem('vl-tempo'); if(r) $("vlRate").value=r;}catch(_){}
+$("vlRate").onchange=()=>{try{localStorage.setItem('vl-tempo',$("vlRate").value)}catch(_){} if(VL.an&&!VL.pause){synth.cancel();sprich();}};
+$("vlVoice").onchange=()=>{try{localStorage.setItem('vl-stimme',$("vlVoice").value)}catch(_){} if(VL.an&&!VL.pause){synth.cancel();sprich();}};
+
+function sammle(){
+  const sel='#art h1.datum, #art h2.titel, #art .bibel, #art .ref, #art .bibeltext[open] .bt p, #art .text > p, #art .vtext:not([hidden]) p, #art .reim span, #art .lese';
+  const out=[];
+  for(const el of document.querySelectorAll(sel)){
+    if(el.closest('[hidden]')) continue;
+    const c=el.cloneNode(true); c.querySelectorAll('sup,.kap').forEach(x=>x.remove());
+    let txt=c.textContent; if(el.classList.contains('lese')) txt=txt.replace(/^❧\s*/,'');
+    if(el.matches('.vref')) txt='Siehe '+txt;
+    txt=sprechText(txt); if(!txt) continue;
+    // lange Absätze in Sätze teilen (manche Browser brechen lange Äußerungen ab)
+    const saetze=txt.match(/[^.!?;:]+[.!?;:]*["“”»«’]*\s*/g)||[txt]; let buf='';
+    for(const s of saetze){ if((buf+s).length>220&&buf){out.push({el,t:buf.trim()});buf='';} buf+=s; }
+    if(buf.trim()) out.push({el,t:buf.trim()});
+  }
+  return out;
+}
+function markiere(el){document.querySelectorAll('.liest').forEach(x=>x.classList.remove('liest')); if(el){el.classList.add('liest'); const r=el.getBoundingClientRect(); if(r.top<120||r.bottom>innerHeight-40) el.scrollIntoView({block:'center',behavior:'smooth'});}}
+function sprich(){
+  if(!VL.an||VL.pause) return;
+  if(VL.i>=VL.segs.length){vlStop();return;}
+  const seg=VL.segs[VL.i]; markiere(seg.el);
+  const u=new SpeechSynthesisUtterance(seg.t); u.lang='de-DE'; u.rate=+$("vlRate").value||1;
+  const v=stimmen().find(v=>v.name===$("vlVoice").value); if(v) u.voice=v;
+  u.onend=()=>{ if(VL.an&&!VL.pause&&VL.segs[VL.i]===seg){VL.i++; sprich();} };
+  u.onerror=e=>{ if(e.error!=='interrupted'&&e.error!=='canceled'){VL.i++; sprich();} };
+  synth.speak(u);
+}
+function vlStart(){
+  if(!synth) return;
+  VL.segs=sammle(); VL.i=0; VL.an=true; VL.pause=false;
+  $("vlbar").hidden=false; $("vlBtn").setAttribute('aria-pressed','true'); $("vlBtn").textContent='■ Vorlesen';
+  $("vlPause").textContent='❚❚ Pause';
+  synth.cancel(); sprich();
+}
+function vlStop(){
+  VL.an=false; VL.pause=false; if(synth) synth.cancel(); markiere(null);
+  $("vlbar").hidden=true; $("vlBtn").setAttribute('aria-pressed','false'); $("vlBtn").textContent='▶ Vorlesen';
+}
+$("vlBtn").onclick=()=>{ if(!synth){ $("vlBtn").textContent='Vorlesen nicht verfügbar'; return; } VL.an?vlStop():vlStart(); };
+$("vlStop").onclick=vlStop;
+$("vlPause").onclick=()=>{
+  if(!VL.an) return;
+  if(!VL.pause){VL.pause=true; synth.cancel(); $("vlPause").textContent='▶ Weiter';}
+  else{VL.pause=false; $("vlPause").textContent='❚❚ Pause'; sprich();}
+};
+// Klick auf einen Absatz während des Vorlesens: dort weiterlesen
+document.addEventListener('click',ev=>{
+  if(!VL.an||ev.target.closest('button,a,select,summary,.vlbar')) return;
+  const el=ev.target.closest('#art p, #art .bibel, #art .ref, #art h1, #art h2, #art .reim span, #art .src, #art .lese'); if(!el) return;
+  const k=VL.segs.findIndex(s=>s.el===el||el.contains(s.el)); if(k<0) return;
+  VL.i=k; VL.pause=false; $("vlPause").textContent='❚❚ Pause'; synth.cancel(); setTimeout(sprich,50);
+});
+
 let book="sk", curKey=todayKey(), cur=null;
 try{const s=localStorage.getItem("andacht-buch"); if(BOOKS[s]) book=s;}catch(_){}
 
 function show(e,scroll=true){
+  if(typeof VL!=='undefined'&&VL.an) vlStop();
   const B=BOOKS[book]; cur=e; if(e.date) curKey=e.date;
   $("art").innerHTML=B.render(e);
   fuelleBibel();
